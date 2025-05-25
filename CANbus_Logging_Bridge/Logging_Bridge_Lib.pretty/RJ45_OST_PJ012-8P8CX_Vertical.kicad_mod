@@ -7,7 +7,7 @@
 	(tags "RJ45 PJ012")
 	(property "Reference" "REF**"
 		(at 4.45 14 0)
-		(layer "F.SilkS")
+		(layer "F.Fab")
 		(uuid "c2d7c3da-8cff-460d-b772-e98f71f655b6")
 		(effects
 			(font

@@ -7,7 +7,7 @@
 	(tags "Surface mounted pin header SMD 2x02 2.54mm double row")
 	(property "Reference" "REF**"
 		(at 0 -3.6 0)
-		(layer "F.SilkS")
+		(layer "F.Fab")
 		(uuid "4ed0cb68-9139-40b3-abd4-b6e918bbec76")
 		(effects
 			(font

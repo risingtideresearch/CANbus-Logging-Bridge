@@ -7,7 +7,7 @@
 	(tags "MicroCrystal SON NoLead MicroCrystal-RV3028-C7")
 	(property "Reference" "REF**"
 		(at 0 -2.55 0)
-		(layer "F.SilkS")
+		(layer "F.Fab")
 		(uuid "7a87c407-3d5d-40c0-a63a-2f75f6909bab")
 		(effects
 			(font

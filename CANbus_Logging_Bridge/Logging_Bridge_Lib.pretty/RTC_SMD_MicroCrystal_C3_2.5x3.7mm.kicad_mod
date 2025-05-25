@@ -7,7 +7,7 @@
 	(tags "RTC C3")
 	(property "Reference" "REF**"
 		(at 0 -3.06 0)
-		(layer "F.SilkS")
+		(layer "F.Fab")
 		(uuid "00ca0322-feeb-4867-99ff-960ff67e5a60")
 		(effects
 			(font

@@ -7,7 +7,7 @@
 	(tags "Through hole pin header THT 2x03 2.54mm double row")
 	(property "Reference" "REF**"
 		(at 1.27 -2.33 0)
-		(layer "F.SilkS")
+		(layer "F.Fab")
 		(uuid "a1695a9b-d568-49c9-8e32-8f28b43497e3")
 		(effects
 			(font

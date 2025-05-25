@@ -7,7 +7,7 @@
 	(tags "SOT-323 SC-70")
 	(property "Reference" "REF**"
 		(at -0.05 -2.25 0)
-		(layer "F.SilkS")
+		(layer "F.Fab")
 		(uuid "ef7bf957-0f7b-4ef4-84dc-2862015de8d7")
 		(effects
 			(font

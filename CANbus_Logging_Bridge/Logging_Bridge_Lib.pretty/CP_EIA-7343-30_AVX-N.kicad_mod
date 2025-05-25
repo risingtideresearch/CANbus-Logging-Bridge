@@ -7,7 +7,7 @@
 	(tags "capacitor tantalum")
 	(property "Reference" "REF**"
 		(at 0 -3.1 0)
-		(layer "F.SilkS")
+		(layer "F.Fab")
 		(uuid "adae395b-4e15-42a5-a8b7-bd76f0757fe8")
 		(effects
 			(font

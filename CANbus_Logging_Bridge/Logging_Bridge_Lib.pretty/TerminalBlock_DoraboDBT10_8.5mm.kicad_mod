@@ -7,7 +7,7 @@
 	(tags "Wuerth WR-TBL Series 3114 terminal block pitch 7.62mm")
 	(property "Reference" "REF**"
 		(at 4.5 -3.25 0)
-		(layer "F.SilkS")
+		(layer "F.Fab")
 		(uuid "47b0bf73-1512-4fb5-b891-b22f0936f2b1")
 		(effects
 			(font

@@ -7,7 +7,7 @@
 	(tags "SOIC SO")
 	(property "Reference" "REF**"
 		(at 0 -6.1 0)
-		(layer "F.SilkS")
+		(layer "F.Fab")
 		(uuid "961b13c3-93ae-4935-9f07-3a9580b1f85e")
 		(effects
 			(font
