@@ -58,16 +58,7 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [
-        [
-          "silk_edge_clearance|39043500|40585500|25b6eec3-5490-4c88-9be2-cb32b1362e50|6f261404-f67a-4ca6-a647-d70b845fcf2b",
-          ""
-        ],
-        [
-          "silk_edge_clearance|39043500|57585500|25b6eec3-5490-4c88-9be2-cb32b1362e50|97aff043-4121-4e88-90b8-3327bab3d2a0",
-          ""
-        ]
-      ],
+      "drc_exclusions": [],
       "meta": {
         "version": 2
       },
@@ -116,6 +107,7 @@
         "solder_mask_bridge": "error",
         "starved_thermal": "error",
         "text_height": "warning",
+        "text_on_edge_cuts": "error",
         "text_thickness": "warning",
         "through_hole_pad_without_hole": "error",
         "too_many_vias": "error",
