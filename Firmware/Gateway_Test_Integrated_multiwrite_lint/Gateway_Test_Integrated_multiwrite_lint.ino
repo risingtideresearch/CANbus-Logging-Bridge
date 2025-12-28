@@ -57,7 +57,6 @@ void ERR(uint8_t errorCode) {
 }
 
 // Convenience function for appending a string to a buffer
-// TODO: MAKE AN ALIAS THAT TAKES UINT8_T* and ITOAs IT
 void appendBuffer(char *outBuff, char *tmp) {
   uint8_t len = strlen(tmp);
   for (uint8_t idx = 0; idx < len; idx++) {
@@ -69,8 +68,24 @@ void appendBuffer(char *outBuff, char *tmp) {
   return;
 }
 
+void appendBufferInt(char *outBuff, uint8_t *tmp, uint8_t len) {
+  char buf[3];
+  for (uint8_t tmpidx = 0; tmpidx < len; tmpidx++) {
+    itoa(tmp[tmpidx], buf, 16);
+    for (uint8_t bufidx = 0; buf[bufidx] != '\0'; bufidx++) {
+      outBuff[wPtr] = buf[bufidx];
+      wPtr++;
+    }
+    memset(buf, 0, sizeof(buf));
+  }
+  outBuff[wPtr] = '\n';
+  wPtr++;  
+  return;
+}
+
 // Get RXBuffers from MCP2515 over SPI. Time critical. 
 void rx(uint8_t channel) {
+  digitalWrite(43, 1); //DEBUG FOR TIMING
   uint8_t IFRread[] = {0x03, 0x2C, 0xFF};
   // Read Interrupt Flag Register to find out if both buffers are full
   digitalWrite(canSelects[channel], 0);
@@ -86,7 +101,7 @@ void rx(uint8_t channel) {
     digitalWrite(canSelects[channel], 0);
     fspi->transfer(rxb1read, 14);
     digitalWrite(canSelects[channel], 1);
-    appendBuffer(bufferCAN, rxb1read);
+    appendBufferInt(bufferCAN, rxb1read, 14);
   }
   if (intf & 0b00000001) {
     uint8_t rxb0read[] = {0x90, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -94,14 +109,16 @@ void rx(uint8_t channel) {
     digitalWrite(canSelects[channel], 0);
     fspi->transfer(rxb0read, 14);
     digitalWrite(canSelects[channel], 1);
-    appendBuffer(bufferCAN, rxb0read);
+    appendBufferInt(bufferCAN, rxb0read, 14);
   }
+  digitalWrite(43, 0); //DEBUG FOR TIMING
   return;
 }
 
 /***SD Convenience Functions***/
 void writeFile(fs::FS &fs, const char *path, const char *message) {
   Serial.printf("Writing file: %s\n", path);
+  Serial.println("");
 
   File file = fs.open(path, FILE_WRITE);
   if (!file) {
@@ -132,6 +149,7 @@ void appendFile(fs::FS &fs, const char *path, const char *message) {
 
 void readFile(fs::FS &fs, const char *path) {
   Serial.printf("Reading file: %s\n", path);
+  Serial.println("");
 
   File file = fs.open(path);
   if (!file) {
@@ -345,6 +363,10 @@ void setup() {
   // Start Logfile
   writeFile(SD_MMC, "/log.txt", "START\n");
 
+  //DEBUG FOR TIMING
+  pinMode(43, OUTPUT);
+  digitalWrite(43, 0);
+
   return;
 }
 
@@ -434,9 +456,9 @@ void debugMenu() {
         writeFile(SD_MMC, "/log.txt", "START\n");
         break;
       case '3':
-        Serial.print("Attempting to Write to SD");
+        Serial.println("Attempting to Write to SD");
         writeFile(SD_MMC, "/test.txt", "TEST SUCCESSFUL!");
-        Serial.print("Attempting to Read from SD");
+        Serial.println("Attempting to Read from SD");
         readFile(SD_MMC, "/test.txt");
         deleteFile(SD_MMC, "/test.txt");
         break;
