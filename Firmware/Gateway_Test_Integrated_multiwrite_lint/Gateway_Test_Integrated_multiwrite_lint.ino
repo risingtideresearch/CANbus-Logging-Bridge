@@ -1,6 +1,5 @@
 #include <SPI.h>
 #include <SparkFun_I2C_Expander_Arduino_Library.h>
-
 #include "FS.h"
 #include "SD_MMC.h"
 
@@ -14,9 +13,12 @@
 #define VERBOSE_ERR true
 uint8_t errorRegister = 0;
 
+// Mutex for critical section control in ISR
+portMUX_TYPE myMutex = portMUX_INITIALIZER_UNLOCKED;
+
 // Map INT and CS pins for MCP2515s
-byte canInterrupts[] = {42, 40, 48, 21, 13, 8};
-byte canSelects[] = {41, 39, 47, 14, 12, 18};
+byte const canInterrupts[] = {42, 40, 48, 21, 13, 8};
+byte const canSelects[] = {41, 39, 47, 14, 12, 18};
 
 // GPIO Expander
 SFE_PCA95XX io(PCA95XX_PCA9534);
@@ -25,14 +27,27 @@ SFE_PCA95XX io(PCA95XX_PCA9534);
 TaskHandle_t canTask;
 TaskHandle_t loggingTask;
 
+// Struct for the CAN frame buffer
+// volatile because ISR can write them unexpectedly 
+struct CANFrame{
+  uint8_t volatile channel; 
+  int64_t volatile timeStamp;
+  uint8_t volatile raw[13];
+};
+
 // Buffer to write CAN traffic to
-char bufferCAN[256];
-uint8_t wPtr = 0;
-uint8_t rPtr = 0;
+struct CANFrame bufferCAN[256];
+uint8_t volatile wPtr = 0;
+uint8_t volatile rPtr = 0;
+
+// For Debugging
+uint8_t wPtr_prev = 0;
+uint8_t rPtr_prev = 0;
+uint16_t SDpos_prev = 0;
 
 // Buffer for writing to storage
-char bufferSD[256];
-uint8_t SDpos = 0;
+char bufferSD[1024];
+uint16_t SDpos = 0;
 
 // Instantiate SPI Class
 SPIClass *fspi = NULL;
@@ -56,36 +71,9 @@ void ERR(uint8_t errorCode) {
   return;
 }
 
-// Convenience function for appending a string to a buffer
-void appendBuffer(char *outBuff, char *tmp) {
-  uint8_t len = strlen(tmp);
-  for (uint8_t idx = 0; idx < len; idx++) {
-    outBuff[wPtr] = tmp[idx];
-    wPtr++;
-  }
-  outBuff[wPtr] = '\n';
-  wPtr++;  
-  return;
-}
-
-void appendBufferInt(char *outBuff, uint8_t *tmp, uint8_t len) {
-  char buf[3];
-  for (uint8_t tmpidx = 0; tmpidx < len; tmpidx++) {
-    itoa(tmp[tmpidx], buf, 16);
-    for (uint8_t bufidx = 0; buf[bufidx] != '\0'; bufidx++) {
-      outBuff[wPtr] = buf[bufidx];
-      wPtr++;
-    }
-    memset(buf, 0, sizeof(buf));
-  }
-  outBuff[wPtr] = '\n';
-  wPtr++;  
-  return;
-}
-
 // Get RXBuffers from MCP2515 over SPI. Time critical. 
 void rx(uint8_t channel) {
-  digitalWrite(43, 1); //DEBUG FOR TIMING
+  taskENTER_CRITICAL(&myMutex);
   uint8_t IFRread[] = {0x03, 0x2C, 0xFF};
   // Read Interrupt Flag Register to find out if both buffers are full
   digitalWrite(canSelects[channel], 0);
@@ -98,10 +86,16 @@ void rx(uint8_t channel) {
   if (intf & 0b00000010) {
     uint8_t rxb1read[] = {0x94, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
                           0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    digitalWrite(canSelects[channel], 0);
+    digitalWrite(canSelects[channel], 0); 
     fspi->transfer(rxb1read, 14);
     digitalWrite(canSelects[channel], 1);
-    appendBufferInt(bufferCAN, rxb1read, 14);
+    CANFrame newFrame;
+    newFrame.channel = channel;
+    for(uint8_t i = 1; i < 14; i++){
+      newFrame.raw[i-1] = rxb1read[i];
+    }
+    bufferCAN[wPtr] = newFrame;
+    wPtr++;
   }
   if (intf & 0b00000001) {
     uint8_t rxb0read[] = {0x90, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -109,9 +103,15 @@ void rx(uint8_t channel) {
     digitalWrite(canSelects[channel], 0);
     fspi->transfer(rxb0read, 14);
     digitalWrite(canSelects[channel], 1);
-    appendBufferInt(bufferCAN, rxb0read, 14);
+    CANFrame newFrame;
+    newFrame.channel = channel;
+    for(uint8_t i = 1; i < 14; i++){
+      newFrame.raw[i-1] = rxb0read[i];
+    }
+    bufferCAN[wPtr] = newFrame;
+    wPtr++;
   }
-  digitalWrite(43, 0); //DEBUG FOR TIMING
+  taskEXIT_CRITICAL(&myMutex);
   return;
 }
 
@@ -370,32 +370,50 @@ void setup() {
   return;
 }
 
-// This task is pinned to Core 0. Its job is to move strings around
+// This task is pinned to Core 0. Its job is to move bytes around
 // and write to the storage. 
 void logFromBuffer(void *parameter) {
   for (;;) {
     if (rPtr != wPtr) {
-      bufferSD[SDpos] = bufferCAN[rPtr];
+      char rawtoa[64];
+      uint8_t rawidx = 0;
+      char buf[3];
+      for (uint8_t tmpidx = 0; tmpidx < ((bufferCAN[rPtr].raw[4]&0xF)+5); tmpidx++) {
+        itoa(bufferCAN[rPtr].raw[tmpidx], buf, 16);
+        for (uint8_t bufidx = 0; buf[bufidx] != '\0'; bufidx++) {
+          rawtoa[rawidx] = buf[bufidx];
+          rawidx++;
+        }
+        rawtoa[rawidx] = ' ';
+        rawidx++;
+        memset(buf, 0, sizeof(buf));
+      }
+      char logEntry[64];
+      sprintf(logEntry, "CH %d RAW %s", bufferCAN[rPtr].channel, rawtoa);
       rPtr++;
-      SDpos++;
+      for (uint8_t logidx = 0; logEntry[logidx] != '\0'; logidx++) {
+        bufferSD[SDpos] = logEntry[logidx];
+        SDpos++;
+      }
+      bufferSD[SDpos] = '\n';
+      SDpos++;     
     } else {
       delay(20);
     }
 
-    if (SDpos > 200) {
+    if (SDpos > 512) {
       appendFile(SD_MMC, "/log.txt", bufferSD);
+      memset(bufferSD, '\0', sizeof(bufferSD));
       SDpos = 0;
     }
 
     if (endLogging) {
-      // TODO: FIX APPEND TO ELIMINATE FRAGMENTS
       appendFile(SD_MMC, "/log.txt", bufferSD);
-      memset(bufferSD, 0, sizeof(bufferSD));
+      memset(bufferSD, '\0', sizeof(bufferSD));
       SDpos = 0;
       endLogging = false;
     }
   }
-  return;
 }
 
 // This task is pinned to Core 1. Its job is mostly to get interrupted.
@@ -405,6 +423,13 @@ void canMonitor(void *parameter) {
     while (!Serial.available()) {
       if (errorRegister && VERBOSE_ERR) {
         printErrors();
+      }
+      // DEBUG: Just to keep an eye on ring buffers during testing
+      if(SDpos != SDpos_prev || rPtr != rPtr_prev || wPtr != wPtr_prev) {
+        Serial.printf("rPtr: %d  wPtr: %d  SDpos: %d \n", rPtr, wPtr, SDpos);
+        SDpos_prev = SDpos;
+        rPtr_prev = rPtr;
+        wPtr_prev = wPtr;
       }
     }
     debugMenu();
