@@ -2,6 +2,7 @@
 #include <SparkFun_I2C_Expander_Arduino_Library.h>
 #include "FS.h"
 #include "SD_MMC.h"
+#include "time.h"
 
 // Error printing helpers
 #define ERR_CAN_FAILED_TO_READ_BUFFER_STATUS 0x01
@@ -13,8 +14,8 @@
 #define VERBOSE_ERR true
 uint8_t errorRegister = 0;
 
-// Mutex for critical section control in ISR
-portMUX_TYPE myMutex = portMUX_INITIALIZER_UNLOCKED;
+// Non-blocking delay period to keep core 0 from panicking 
+const TickType_t xDelay = 20 / portTICK_PERIOD_MS;
 
 // Map INT and CS pins for MCP2515s
 byte const canInterrupts[] = {42, 40, 48, 21, 13, 8};
@@ -31,8 +32,15 @@ TaskHandle_t loggingTask;
 // volatile because ISR can write them unexpectedly 
 struct CANFrame{
   uint8_t volatile channel; 
-  int64_t volatile timeStamp;
+  time_t volatile timeSec;
+  suseconds_t volatile timeuSec;
   uint8_t volatile raw[13];
+  bool volatile is_expanded;  
+  uint8_t volatile data[8];
+  uint32_t volatile id;  
+  uint8_t volatile dlc;
+  bool volatile rtr;
+  bool volatile ext;
 };
 
 // Buffer to write CAN traffic to
@@ -57,14 +65,6 @@ bool endLogging = false;
 // Lazy flag to break from serial menu loop
 bool exitMenu = false;
 
-// Stuff the ISRs into RAM
-void IRAM_ATTR rxISR0() { rx(0); }
-void IRAM_ATTR rxISR1() { rx(1); }
-void IRAM_ATTR rxISR2() { rx(2); }
-void IRAM_ATTR rxISR3() { rx(3); }
-void IRAM_ATTR rxISR4() { rx(4); }
-void IRAM_ATTR rxISR5() { rx(5); }
-
 // Add an error code to the register for printing in VERBOSE mode
 void ERR(uint8_t errorCode) {
   errorRegister = errorRegister | errorCode;
@@ -72,8 +72,10 @@ void ERR(uint8_t errorCode) {
 }
 
 // Get RXBuffers from MCP2515 over SPI. Time critical. 
-void rx(uint8_t channel) {
-  taskENTER_CRITICAL(&myMutex);
+void IRAM_ATTR rx(uint8_t channel) {
+  digitalWrite(43, 1);
+  struct timeval tv;
+	gettimeofday(&tv, NULL);
   uint8_t IFRread[] = {0x03, 0x2C, 0xFF};
   // Read Interrupt Flag Register to find out if both buffers are full
   digitalWrite(canSelects[channel], 0);
@@ -91,6 +93,8 @@ void rx(uint8_t channel) {
     digitalWrite(canSelects[channel], 1);
     CANFrame newFrame;
     newFrame.channel = channel;
+    newFrame.timeSec = tv.tv_sec;
+    newFrame.timeuSec = tv.tv_usec;
     for(uint8_t i = 1; i < 14; i++){
       newFrame.raw[i-1] = rxb1read[i];
     }
@@ -105,15 +109,25 @@ void rx(uint8_t channel) {
     digitalWrite(canSelects[channel], 1);
     CANFrame newFrame;
     newFrame.channel = channel;
+    newFrame.timeSec = tv.tv_sec;
+    newFrame.timeuSec = tv.tv_usec;
     for(uint8_t i = 1; i < 14; i++){
       newFrame.raw[i-1] = rxb0read[i];
     }
     bufferCAN[wPtr] = newFrame;
     wPtr++;
   }
-  taskEXIT_CRITICAL(&myMutex);
+  digitalWrite(43, 0);
   return;
 }
+
+// Stuff the ISRs into RAM
+void IRAM_ATTR rxISR0() { rx(0); }
+void IRAM_ATTR rxISR1() { rx(1); }
+void IRAM_ATTR rxISR2() { rx(2); }
+void IRAM_ATTR rxISR3() { rx(3); }
+void IRAM_ATTR rxISR4() { rx(4); }
+void IRAM_ATTR rxISR5() { rx(5); }
 
 /***SD Convenience Functions***/
 void writeFile(fs::FS &fs, const char *path, const char *message) {
@@ -279,24 +293,16 @@ void printErrors() {
 
 // Initialize ALL THE THINGS
 void setup() {
-  // Create pinned tasks
-  xTaskCreatePinnedToCore(logFromBuffer, // Task Function
-                          "LoggingTask", // Task Name
-                          10000,         // Stack Size (words)
-                          NULL,          // Input Param
-                          1,             // Priority
-                          &loggingTask,  // Task Handle
-                          0);            // Core where the task should run
-
+  // Create pinned task
   xTaskCreatePinnedToCore(canMonitor,   // Task Function
                           "CANMonitor", // Task Name
-                          10000,        // Stack Size (words)
+                          20000,        // Stack Size (words)
                           NULL,         // Input Param
                           1,            // Priority
                           &canTask,     // Task Handle
-                          1);           // Core where the task should run
+                          0);           // Core where the task should run
 
-  Serial.begin(115200);
+  Serial.begin(921600);
   Wire.begin(1, 2);
 
   // Set all SPI CS pins high (unasserted)
@@ -304,11 +310,6 @@ void setup() {
     pinMode(canSelects[i], OUTPUT);
     digitalWrite(canSelects[i], 1);
   }
-
-  // Start SPI 
-  fspi = new SPIClass(FSPI);
-  fspi->begin(11, 9, 10, -1);
-  fspi->beginTransaction(SPISettings(10e6, MSBFIRST, SPI_MODE0));
 
   // Assign SD_MMC interface pins
   SD_MMC.setPins(6, 5, 7, 15, 16, 17);
@@ -352,14 +353,6 @@ void setup() {
     }
   }
 
-  // register the receive callbacks
-  attachInterrupt(canInterrupts[0], rxISR0, FALLING);
-  attachInterrupt(canInterrupts[1], rxISR1, FALLING);
-  attachInterrupt(canInterrupts[2], rxISR2, FALLING);
-  attachInterrupt(canInterrupts[3], rxISR3, FALLING);
-  attachInterrupt(canInterrupts[4], rxISR4, FALLING);
-  attachInterrupt(canInterrupts[5], rxISR5, FALLING);
-
   // Start Logfile
   writeFile(SD_MMC, "/log.txt", "START\n");
 
@@ -370,57 +363,25 @@ void setup() {
   return;
 }
 
-// This task is pinned to Core 0. Its job is to move bytes around
-// and write to the storage. 
-void logFromBuffer(void *parameter) {
-  for (;;) {
-    if (rPtr != wPtr) {
-      char rawtoa[64];
-      uint8_t rawidx = 0;
-      char buf[3];
-      for (uint8_t tmpidx = 0; tmpidx < ((bufferCAN[rPtr].raw[4]&0xF)+5); tmpidx++) {
-        itoa(bufferCAN[rPtr].raw[tmpidx], buf, 16);
-        for (uint8_t bufidx = 0; buf[bufidx] != '\0'; bufidx++) {
-          rawtoa[rawidx] = buf[bufidx];
-          rawidx++;
-        }
-        rawtoa[rawidx] = ' ';
-        rawidx++;
-        memset(buf, 0, sizeof(buf));
-      }
-      char logEntry[64];
-      sprintf(logEntry, "CH %d RAW %s", bufferCAN[rPtr].channel, rawtoa);
-      rPtr++;
-      for (uint8_t logidx = 0; logEntry[logidx] != '\0'; logidx++) {
-        bufferSD[SDpos] = logEntry[logidx];
-        SDpos++;
-      }
-      bufferSD[SDpos] = '\n';
-      SDpos++;     
-    } else {
-      delay(20);
-    }
-
-    if (SDpos > 512) {
-      appendFile(SD_MMC, "/log.txt", bufferSD);
-      memset(bufferSD, '\0', sizeof(bufferSD));
-      SDpos = 0;
-    }
-
-    if (endLogging) {
-      appendFile(SD_MMC, "/log.txt", bufferSD);
-      memset(bufferSD, '\0', sizeof(bufferSD));
-      SDpos = 0;
-      endLogging = false;
-    }
-  }
-}
-
-// This task is pinned to Core 1. Its job is mostly to get interrupted.
+// This task is pinned to Core 0. Its job is mostly to get interrupted.
 // It also waits for Serial and reports errors. 
 void canMonitor(void *parameter) {
+
+  // Start SPI 
+  fspi = new SPIClass(FSPI);
+  fspi->begin(11, 9, 10, -1);
+  fspi->beginTransaction(SPISettings(10e6, MSBFIRST, SPI_MODE0));
+  
+  // register the receive callbacks
+  attachInterrupt(canInterrupts[0], rxISR0, FALLING);
+  attachInterrupt(canInterrupts[1], rxISR1, FALLING);
+  attachInterrupt(canInterrupts[2], rxISR2, FALLING);
+  attachInterrupt(canInterrupts[3], rxISR3, FALLING);
+  attachInterrupt(canInterrupts[4], rxISR4, FALLING);
+  attachInterrupt(canInterrupts[5], rxISR5, FALLING);
+
   for (;;) {
-    while (!Serial.available()) {
+    if (!Serial.available()) {
       if (errorRegister && VERBOSE_ERR) {
         printErrors();
       }
@@ -432,7 +393,10 @@ void canMonitor(void *parameter) {
         wPtr_prev = wPtr;
       }
     }
-    debugMenu();
+    if (Serial.available()) {
+      debugMenu();
+    }
+    vTaskDelay(xDelay);
   }
   return;
 }
@@ -523,5 +487,94 @@ void debugMenu() {
   return;
 }
 
-// Vestigial loop function
-void loop() {}
+void expandFrame(uint8_t volatile frameIdx) {
+  bufferCAN[frameIdx].ext = ((bufferCAN[frameIdx].raw[1] >> 3)  & 0x01);
+  bufferCAN[frameIdx].id = 0x000;
+  for (uint8_t i = 0; i < 3; i++) {
+    if ((bufferCAN[frameIdx].raw[1] >> i + 5) & 0x01) {bufferCAN[frameIdx].id |= 1 << i;}
+  }
+  for (uint8_t i = 0; i < 8; i++) {
+    if ((bufferCAN[frameIdx].raw[0] >> i) & 0x01) {bufferCAN[frameIdx].id |= 1 << i + 3;} 
+  }  
+  if (bufferCAN[frameIdx].ext) {
+    for (uint8_t i = 0; i < 8; i++) {
+      if ((bufferCAN[frameIdx].raw[3] >> i) & 0x01) {bufferCAN[frameIdx].id |= 1 << i + 11;} 
+    }  
+    for (uint8_t i = 0; i < 8; i++) {
+      if ((bufferCAN[frameIdx].raw[2] >> i) & 0x01) {bufferCAN[frameIdx].id |= 1 << i + 19;} 
+    }  
+    for (uint8_t i = 0; i < 2; i++) {
+      if ((bufferCAN[frameIdx].raw[1] >> i) & 0x01) {bufferCAN[frameIdx].id |= 1 << i + 27;}
+    }
+    bufferCAN[frameIdx].rtr = ((bufferCAN[frameIdx].raw[4] >> 6)  & 0x01);    
+  } else {
+    bufferCAN[frameIdx].rtr = ((bufferCAN[frameIdx].raw[1] >> 4)  & 0x01);
+  }
+  if (!bufferCAN[frameIdx].rtr) {
+    for (uint8_t i = 0; i < 4; i++) {
+      if ((bufferCAN[frameIdx].raw[4] >> i) & 0x01) {bufferCAN[frameIdx].dlc |= 1 << i;}
+    }
+    for (uint8_t i = 0; i < bufferCAN[frameIdx].dlc; i++) {
+      bufferCAN[frameIdx].data[i] = bufferCAN[frameIdx].raw[i + 5];
+    }
+  }
+  bufferCAN[frameIdx].is_expanded = 1;
+  return;
+}
+
+// This task is pinned to Core 1. Its job is to move bytes around
+// and write to the storage. 
+void loop() {
+  if (rPtr != wPtr) {
+    expandFrame(rPtr);
+    char rawtoa[64];
+    uint8_t rawidx = 0;
+    char buf[3];
+    for (uint8_t tmpidx = 0; tmpidx < bufferCAN[rPtr].dlc; tmpidx++) {
+      itoa(bufferCAN[rPtr].data[tmpidx], buf, 16);
+      if (bufferCAN[rPtr].data[tmpidx] < 0x10) {
+        rawtoa[rawidx] = '0';
+        rawidx++;
+        for (uint8_t bufidx = 0; buf[bufidx] != '\0'; bufidx++) {
+          rawtoa[rawidx] = buf[bufidx];
+          rawidx++;
+        }
+      } else {
+        for (uint8_t bufidx = 0; buf[bufidx] != '\0'; bufidx++) {
+          rawtoa[rawidx] = buf[bufidx];
+          rawidx++;
+        }        
+      }  
+      memset(buf, 0, sizeof(buf));
+    }
+    rawtoa[rawidx] = '\0';
+    char logEntry[64];
+    if (bufferCAN[rPtr].rtr) {
+      sprintf(logEntry, "(%ld.%ld) can%d %X#R", bufferCAN[rPtr].timeSec, bufferCAN[rPtr].timeuSec, bufferCAN[rPtr].channel, bufferCAN[rPtr].id);
+    } else {
+      sprintf(logEntry, "(%ld.%ld) can%d %X#%s", bufferCAN[rPtr].timeSec, bufferCAN[rPtr].timeuSec, bufferCAN[rPtr].channel, bufferCAN[rPtr].id, rawtoa);
+    }
+    rPtr++;
+    for (uint8_t logidx = 0; logEntry[logidx] != '\0'; logidx++) {
+      bufferSD[SDpos] = logEntry[logidx];
+      SDpos++;
+    }
+    bufferSD[SDpos] = '\n';
+    SDpos++;     
+  } else {
+    vTaskDelay(xDelay);
+  }
+
+  if (SDpos > 512) {
+    appendFile(SD_MMC, "/log.txt", bufferSD);
+    memset(bufferSD, '\0', sizeof(bufferSD));
+    SDpos = 0;
+  }
+
+  if (endLogging) {
+    appendFile(SD_MMC, "/log.txt", bufferSD);
+    memset(bufferSD, '\0', sizeof(bufferSD));
+    SDpos = 0;
+    endLogging = false;
+  }
+}
