@@ -15,7 +15,7 @@
 uint8_t errorRegister = 0;
 
 // Non-blocking delay period to keep core 0 from panicking 
-const TickType_t xDelay = 20 / portTICK_PERIOD_MS;
+const TickType_t xDelay = 15 / portTICK_PERIOD_MS;
 
 // Map INT and CS pins for MCP2515s
 byte const canInterrupts[] = {42, 40, 48, 21, 13, 8};
@@ -368,7 +368,7 @@ void setup() {
 void canMonitor(void *parameter) {
 
   // Start SPI 
-  fspi = new SPIClass(FSPI);
+  fspi = new SPIClass(HSPI);
   fspi->begin(11, 9, 10, -1);
   fspi->beginTransaction(SPISettings(10e6, MSBFIRST, SPI_MODE0));
   
