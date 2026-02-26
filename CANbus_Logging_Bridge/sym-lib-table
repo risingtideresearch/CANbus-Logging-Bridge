@@ -1,4 +1,0 @@
-(sym_lib_table
-  (version 7)
-  (lib (name "Logging_Bridge_Lib")(type "KiCad")(uri "${KIPRJMOD}/Logging_Bridge_Lib.kicad_sym")(options "")(descr ""))
-)
